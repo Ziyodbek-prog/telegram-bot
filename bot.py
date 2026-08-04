@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "7832829103:AAH_YOUR_TELEGRAM_BOT_TOKEN_HERE"
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://wskiglwygorhjmhrmoxm.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_udznrMLszrXelL-P1CbLNA_ayort0ja")
 
-ADMIN_TELEGRAM_IDS = [123456789]
+ADMIN_TELEGRAM_IDS = [8926978756]
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
