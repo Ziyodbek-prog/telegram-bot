@@ -303,4 +303,56 @@ async def get_expanded_stats():
             "services_count": s_cnt, "categories_count": c_cnt,
             "total_revenue": tot_rev, "pending_topups": pending_topups,
             "total_orders": tot_orders, "total_ref_paid": tot_ref_paid
-      }
+        }
+
+# ==========================================
+# 🔍 TASHXIS FUNKSIYASI (TUSHIB QOLGAN QA’TIY FIX)
+# ==========================================
+
+async def run_full_diagnostics(bot_instance):
+    report = ["🔍 **NEON POSTGRESQL DIAGNOSTIKA HISOBOТI**\n"]
+
+    try:
+        me = await bot_instance.get_me()
+        report.append(f"✅ **Telegram Bot API:** A'lo (`@{me.username}` online)")
+    except Exception as e:
+        report.append(f"❌ **Telegram Bot API:** Xatolik ({e})")
+
+    try:
+        stats = await get_expanded_stats()
+        report.append(f"✅ **Neon PostgreSQL Baza:** A'lo")
+        report.append(f" └ Foydalanuvchilar: **{stats['users_total']} ta** (Bugun: **+{stats['users_today']} ta**)")
+        report.append(f" └ Bo'limlar / Xizmatlar: **{stats['categories_count']} ta bo'lim / {stats['services_count']} ta xizmat**")
+        report.append(f" └ Buyurtmalar / Kassa: **{stats['total_orders']} ta buyurtma / {stats['total_revenue']:,.0f} so'm**")
+    except Exception as e:
+        report.append(f"❌ **Neon PostgreSQL:** Ulanib bo'lmadi ({e})")
+
+    sett = await get_db_settings()
+    api_url = sett.get("smm_api_url", "")
+    api_key = sett.get("smm_api_key", "")
+
+    if not api_url or not api_key:
+        report.append("⚠️ **SMM Panel API:** URL yoki Key kiritilmagan!")
+    else:
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {"key": api_key, "action": "balance"}
+                async with session.post(api_url, data=payload, timeout=8) as res:
+                    if res.status == 200:
+                        data = await res.json()
+                        if "balance" in data:
+                            report.append(f"✅ **SMM API Ulanishi:** A'lo (Balans: `{data['balance']}`)")
+                        else:
+                            report.append(f"⚠️ **SMM API Ulanishi:** Kalit xato")
+                    else:
+                        report.append(f"❌ **SMM API:** HTTP {res.status}")
+        except Exception as e:
+            report.append(f"❌ **SMM API:** {e}")
+
+    chans = await get_channels_db()
+    report.append(f"📢 **Majburiy Obuna Kanallari:** **{len(chans)} ta aktiv kanal**")
+    is_m = sett.get("is_maintenance", False)
+    report.append(f"\n⚙️ **Bot Rejimi:** {'🔴 Texnik Ishlar' if is_m else '🟢 Ishchi Rejim'}")
+
+    return "\n".join(report)
+        
