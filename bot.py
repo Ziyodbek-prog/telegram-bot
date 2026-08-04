@@ -434,10 +434,145 @@ async def process_markup_percent(message: types.Message, state: FSMContext):
     for s in api_services:
         base_rate = float(s.get("rate", 1000)) * 12500 / 1000.0
         final_price = base_rate * (1.0 + markup)
-        
         payload = {
             "title": s.get("name", "Xizmat"),
             "price": round(final_price, -2),
             "category": s.get("category", "SMM"),
             "provider_service_id": str(s.get("service")),
-            "description": "Ka
+            "description": "Kafolatlangan xizmat"
+        }
+        await db_query_async("services", method="POST", payload=payload)
+        imported_count += 1
+
+    await message.answer(f"🎉 **{imported_count} ta** xizmat {int(markup*100)}% ustama bilan saqlandi!", parse_mode="Markdown")
+
+@dp.callback_query(F.data == "adm_add_srv")
+async def cb_adm_add_srv(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_new_cat)
+    await call.message.answer("📁 Kategoriya nomini kiriting (masalan: `Telegram Obunachilar`):", parse_mode="Markdown")
+    await call.answer()
+
+@dp.message(AdminStates.waiting_new_cat)
+async def process_new_cat(message: types.Message, state: FSMContext):
+    await state.update_data(cat=message.text.strip())
+    await state.set_state(AdminStates.waiting_new_srv_name)
+    await message.answer("🔹 Xizmat nomini kiriting:")
+
+@dp.message(AdminStates.waiting_new_srv_name)
+async def process_new_srv_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await state.set_state(AdminStates.waiting_new_srv_price)
+    await message.answer("💰 1000 ta uchun sotuv narxini kiriting (masalan: `15000`):")
+
+@dp.message(AdminStates.waiting_new_srv_price)
+async def process_new_srv_price(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Narxni raqamda kiriting:")
+        return
+    await state.update_data(price=message.text.strip())
+    await state.set_state(AdminStates.waiting_new_srv_provider_id)
+    await message.answer("🆔 SMM Provayder Service ID'sini kiriting (masalan: `102`):")
+
+@dp.message(AdminStates.waiting_new_srv_provider_id)
+async def process_new_srv_provider_id(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    payload = {
+        "category": data["cat"],
+        "title": data["name"],
+        "price": float(data["price"]),
+        "provider_service_id": message.text.strip(),
+        "description": "Kafolatlangan xizmat"
+    }
+    await db_query_async("services", method="POST", payload=payload)
+    await state.clear()
+    await message.answer(f"✅ **Yangi xizmat qo'shildi!**\n📁 {data['cat']} -> 🔹 {data['name']}", parse_mode="Markdown")
+
+@dp.callback_query(F.data == "adm_manage_srv")
+async def cb_adm_manage_srv(call: types.CallbackQuery):
+    services = await db_query_async("services?select=*")
+    if not isinstance(services, list) or len(services) == 0:
+        await call.message.answer("🛍 Hozircha bazada xizmatlar yo'q.")
+        await call.answer()
+        return
+
+    await call.message.answer("⚙️ **MAVJUD XIZMATLAR RO'YXATI:**")
+    for s in services[:15]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Ushbu Xizmatni O'chirish", callback_data=f"delsrv_{s['id']}")]
+        ])
+        await call.message.answer(f"🔹 **{s['title']}**\n📁 {s.get('category')} | Narxi: {s['price']} so'm", reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("delsrv_"))
+async def cb_delsrv(call: types.CallbackQuery):
+    srv_id = call.data.split("delsrv_")[1]
+    await db_query_async(f"services?id=eq.{srv_id}", method="DELETE")
+    await call.message.edit_text("❌ **Xizmat muvaffaqiyatli o'chirildi!**", parse_mode="Markdown")
+    await call.answer()
+
+@dp.callback_query(F.data == "adm_card")
+async def cb_adm_card(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_card_number)
+    await call.message.answer("💳 Yangi karta raqamini kiriting:")
+    await call.answer()
+
+@dp.message(AdminStates.waiting_card_number)
+async def process_card_num(message: types.Message, state: FSMContext):
+    await state.update_data(c_num=message.text.strip())
+    await state.set_state(AdminStates.waiting_card_holder)
+    await message.answer("👤 Karta egasining ismini kiriting:")
+
+@dp.message(AdminStates.waiting_card_holder)
+async def process_card_hold(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await db_query_async("settings?id=eq.1", method="PATCH", payload={"card_number": data["c_num"], "card_holder": message.text.strip()})
+    await update_settings_cache()
+    await state.clear()
+    await message.answer("✅ Karta ma'lumotlari yangilandi!")
+
+@dp.callback_query(F.data == "adm_stats")
+async def cb_adm_stats(call: types.CallbackQuery):
+    users = await db_query_async("users?select=id")
+    topups = await db_query_async("topups?status=eq.approved&select=amount")
+    services = await db_query_async("services?select=id")
+    
+    total_users = len(users) if isinstance(users, list) else 0
+    total_revenue = sum([float(t.get("amount", 0)) for t in topups]) if isinstance(topups, list) else 0.0
+    total_services = len(services) if isinstance(services, list) else 0
+
+    msg = (
+        f"📊 **BOTNING UMUMIY STATISTIKASI:**\n\n"
+        f"👥 Foydalanuvchilar: **{total_users} ta**\n"
+        f"🛍 Aktiv xizmatlar: **{total_services} ta**\n"
+        f"💰 Jami tasdiqlangan kassa: **{total_revenue:,.0f} so'm**"
+    )
+    await call.message.answer(msg, parse_mode="Markdown")
+    await call.answer()
+
+# ==========================================
+# 🌐 RENDER HTTP SERVER (KEEP ALIVE)
+# ==========================================
+
+async def handle_ping(request):
+    return web.Response(text="Modular Pro SMM Bot Engine Live 24/7", status=200)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"🌐 Server running on port {port}")
+
+async def main():
+    asyncio.create_task(start_web_server())
+    await update_settings_cache()
+    logger.info("🚀 Modular Pro SMM Bot starting...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+        
