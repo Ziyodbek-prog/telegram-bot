@@ -12,7 +12,7 @@ from database import (
     get_all_services,
     create_topup,
     create_order_db,
-    db_pool,
+    subtract_user_balance,
     logger,
 )
 from keyboards import (
@@ -200,8 +200,7 @@ async def process_order_qty(message: types.Message, state: FSMContext):
         await message.answer(f"❌ **Balansingizda mablag' yetarli emas!**\nKerakli summa: **{total_price:,.0f} so'm**\nSizning balansingiz: **{balance:,.0f} so'm**", parse_mode="Markdown")
         return
 
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE users SET balance = balance - $1 WHERE id = $2", total_price, message.from_user.id)
+    await subtract_user_balance(message.from_user.id, total_price)
 
     sett = await get_db_settings()
     api_url = sett.get("smm_api_url")
@@ -231,4 +230,5 @@ async def process_order_qty(message: types.Message, state: FSMContext):
 @user_router.message(F.text == "📞 Qo'llab-quvvatlash")
 async def cmd_supp(message: types.Message):
     if await check_guard(message, message.bot): return
-    await message.answer("📞 Qo'llab-quvvatlash xizmati admini: @Ziyodbek_Admin")
+    await message.answer("📞 Qo'llab-quvvatlash xizmati admini: @plus_ignore")
+    
