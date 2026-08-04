@@ -306,7 +306,7 @@ async def get_expanded_stats():
         }
 
 # ==========================================
-# 🔍 TASHXIS FUNKSIYASI (TUSHIB QOLGAN QA’TIY FIX)
+# 🔍 TASHXIS FUNKSIYASI (FULL BEZ-XATO)
 # ==========================================
 
 async def run_full_diagnostics(bot_instance):
@@ -327,14 +327,14 @@ async def run_full_diagnostics(bot_instance):
     except Exception as e:
         report.append(f"❌ **Neon PostgreSQL:** Ulanib bo'lmadi ({e})")
 
-    sett = await get_db_settings()
-    api_url = sett.get("smm_api_url", "")
-    api_key = sett.get("smm_api_key", "")
+    try:
+        sett = await get_db_settings()
+        api_url = sett.get("smm_api_url", "")
+        api_key = sett.get("smm_api_key", "")
 
-    if not api_url or not api_key:
-        report.append("⚠️ **SMM Panel API:** URL yoki Key kiritilmagan!")
-    else:
-        try:
+        if not api_url or not api_key:
+            report.append("⚠️ **SMM Panel API:** URL yoki Key kiritilmagan!")
+        else:
             async with aiohttp.ClientSession() as session:
                 payload = {"key": api_key, "action": "balance"}
                 async with session.post(api_url, data=payload, timeout=8) as res:
@@ -346,13 +346,18 @@ async def run_full_diagnostics(bot_instance):
                             report.append(f"⚠️ **SMM API Ulanishi:** Kalit xato")
                     else:
                         report.append(f"❌ **SMM API:** HTTP {res.status}")
-        except Exception as e:
-            report.append(f"❌ **SMM API:** {e}")
+    except Exception as e:
+        report.append(f"❌ **SMM API:** {e}")
 
-    chans = await get_channels_db()
-    report.append(f"📢 **Majburiy Obuna Kanallari:** **{len(chans)} ta aktiv kanal**")
+    try:
+        chans = await get_channels_db()
+        report.append(f"📢 **Majburiy Obuna Kanallari:** **{len(chans)} ta aktiv kanal**")
+    except Exception as e:
+        report.append(f"⚠️ **Majburiy Obuna:** {e}")
+
+    sett = await get_db_settings()
     is_m = sett.get("is_maintenance", False)
     report.append(f"\n⚙️ **Bot Rejimi:** {'🔴 Texnik Ishlar' if is_m else '🟢 Ishchi Rejim'}")
 
     return "\n".join(report)
-        
+    
