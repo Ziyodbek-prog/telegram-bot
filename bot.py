@@ -25,7 +25,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://wskiglwygorhjmhrmoxm.supabase.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_udznrMLszrXelL-P1CbLNA_ayort0ja")
 
 # O'zingizning Telegram ID'ingizni shu yerga kiriting
-ADMIN_TELEGRAM_IDS = [123456789]
+ADMIN_TELEGRAM_IDS = [8926978756]
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
