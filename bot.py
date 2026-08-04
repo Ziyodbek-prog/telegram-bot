@@ -24,7 +24,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "7832829103:AAH_YOUR_TELEGRAM_BOT_TOKEN_HERE"
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://wskiglwygorhjmhrmoxm.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_udznrMLszrXelL-P1CbLNA_ayort0ja")
 
-ADMIN_TELEGRAM_IDS = [8926978756]
+# O'zingizning Telegram ID'ingizni shu yerga kiriting
+ADMIN_TELEGRAM_IDS = [123456789]
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -39,7 +40,6 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Sozlamalarni keshda saqlash (Tezlik uchun)
 SETTINGS_CACHE = {"card_number": "8600 0000 0000 0000", "card_holder": "Ziyodbek G."}
 
 # ==========================================
@@ -57,7 +57,7 @@ class AdminStates(StatesGroup):
     waiting_card_holder = State()
 
 # ==========================================
-# ⚡ ASINXRON DATABASE SO'ROVLARI (O'TA TEZKOR)
+# ⚡ ASINXRON DATABASE SO'ROVLARI
 # ==========================================
 
 async def db_query_async(endpoint, method="GET", payload=None):
@@ -172,37 +172,52 @@ async def cb_topup_start(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(UserStates.waiting_topup_amount)
 async def process_topup_amt(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
+    if not message.text or not message.text.isdigit():
         await message.answer("❌ Faqat raqam kiriting (masalan: 50000):")
         return
     await state.update_data(amt=message.text)
     await state.set_state(UserStates.waiting_topup_receipt)
     await message.answer("🧾 Chek rasmi, TxID raqami yoki izohni yuboring:")
 
+# RASM VA MATNNI BIRDEK QABUL QILUVCHI MUKAMMAL HANDLER:
 @dp.message(UserStates.waiting_topup_receipt)
 async def process_topup_rec(message: types.Message, state: FSMContext):
     data = await state.get_data()
     amt = data.get("amt")
-    receipt = message.text.strip()
     email = f"tg_{message.from_user.id}@telegram.com"
 
-    payload = {"user_email": email, "amount": float(amt), "receipt_info": receipt, "status": "pending"}
+    photo_id = None
+    receipt_info = ""
+
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+        receipt_info = message.caption or "📸 Chek rasmi yuborildi"
+    elif message.text:
+        receipt_info = message.text.strip()
+    else:
+        receipt_info = "Chek ma'lumoti"
+
+    payload = {"user_email": email, "amount": float(amt), "receipt_info": receipt_info, "status": "pending"}
     res = await db_query_async("topups", method="POST", payload=payload)
     await state.clear()
 
     if res:
         await message.answer("✅ **To'lov arizasi yuborildi!** Admin tekshirib balansga qo'shadi.", parse_mode="Markdown")
         topup_id = res[0]["id"] if isinstance(res, list) else res.get("id", "0")
+
         for admin_id in ADMIN_TELEGRAM_IDS:
             try:
-                txt = f"🔔 **YANGI TO'LOV ARIZASI!**\n\n👤 User: {message.from_user.full_name} (`{message.from_user.id}`)\n💰 Summa: **{amt} so'm**\n🧾 Chek/TxID: `{receipt}`"
+                txt = f"🔔 **YANGI TO'LOV ARIZASI!**\n\n👤 User: {message.from_user.full_name} (`{message.from_user.id}`)\n💰 Summa: **{amt} so'm**\n🧾 Izoh/Chek: `{receipt_info}`"
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [
                         InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"appr_{topup_id}_{message.from_user.id}_{amt}"),
                         InlineKeyboardButton(text="❌ Rad etish", callback_data=f"rej_{topup_id}_{message.from_user.id}")
                     ]
                 ])
-                await bot.send_message(admin_id, txt, reply_markup=kb, parse_mode="Markdown")
+                if photo_id:
+                    await bot.send_photo(admin_id, photo=photo_id, caption=txt, reply_markup=kb, parse_mode="Markdown")
+                else:
+                    await bot.send_message(admin_id, txt, reply_markup=kb, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Admin notify error: {e}")
 
@@ -242,13 +257,16 @@ async def cb_service_select(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(UserStates.waiting_order_link)
 async def process_order_link(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Iltimos, havola matnini yuboring:")
+        return
     await state.update_data(link=message.text.strip())
     await state.set_state(UserStates.waiting_order_quantity)
     await message.answer("🔢 Qancha miqdorda kerak? (Masalan: `1000`):", parse_mode="Markdown")
 
 @dp.message(UserStates.waiting_order_quantity)
 async def process_order_qty(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
+    if not message.text or not message.text.isdigit():
         await message.answer("❌ Miqdorni raqamda kiriting:")
         return
     qty = int(message.text)
@@ -304,7 +322,7 @@ async def cb_adm_topups(call: types.CallbackQuery):
         await call.answer()
         return
     for t in topups:
-        txt = f"🆔 Ariza #{t['id']}\n📧 User: `{t['user_email']}`\n💰 Summa: **{t['amount']:,.0f} so'm**\n🧾 Chek/TxID: `{t['receipt_info']}`"
+        txt = f"🆔 Ariza #{t['id']}\n📧 User: `{t['user_email']}`\n💰 Summa: **{t['amount']:,.0f} so'm**\n🧾 Izoh/Chek: `{t['receipt_info']}`"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"appr_{t['id']}_0_{t['amount']}"),
@@ -352,11 +370,11 @@ async def cb_adm_stats(call: types.CallbackQuery):
     await call.answer()
 
 # ==========================================
-# 🌐 RENDER HTTP SERVER (KEEP ALIVE)
+# 🌐 RENDER HTTP SERVER
 # ==========================================
 
 async def handle_ping(request):
-    return web.Response(text="Async Speed Boost SMM Bot Live 24/7", status=200)
+    return web.Response(text="Photo Supported SMM Bot Engine Live 24/7", status=200)
 
 async def start_web_server():
     app = web.Application()
@@ -372,8 +390,9 @@ async def start_web_server():
 async def main():
     asyncio.create_task(start_web_server())
     await update_settings_cache()
-    logger.info("🚀 Async SMM Bot starting...")
+    logger.info("🚀 Photo Supported SMM Bot starting...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+                            
