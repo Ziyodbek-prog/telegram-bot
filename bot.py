@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-import requests
+import aiohttp
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F, types
@@ -20,12 +20,11 @@ from aiogram.types import (
 # ⚙️ SOZLAMALAR VA BULUTLI ULANISH
 # ==========================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8418011580:AAEMf_m4B01-PzzIoGscsPbuMG0OSjAAZjY")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7832829103:AAH_YOUR_TELEGRAM_BOT_TOKEN_HERE")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://wskiglwygorhjmhrmoxm.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_udznrMLszrXelL-P1CbLNA_ayort0ja")
 
-# O'zingizning Telegram ID'ingizni shu yerga kiriting
-ADMIN_TELEGRAM_IDS = [8926978756]
+ADMIN_TELEGRAM_IDS = [123456789]
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -39,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+# Sozlamalarni keshda saqlash (Tezlik uchun)
+SETTINGS_CACHE = {"card_number": "8600 0000 0000 0000", "card_holder": "Ziyodbek G."}
 
 # ==========================================
 # 📝 FSM BOSQICHLARI
@@ -55,29 +57,32 @@ class AdminStates(StatesGroup):
     waiting_card_holder = State()
 
 # ==========================================
-# 🗄 DATABASE FUNKSIYALARI
+# ⚡ ASINXRON DATABASE SO'ROVLARI (O'TA TEZKOR)
 # ==========================================
 
-def db_query(endpoint, method="GET", payload=None):
+async def db_query_async(endpoint, method="GET", payload=None):
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
-    try:
-        if method == "GET":
-            res = requests.get(url, headers=HEADERS, timeout=10)
-            return res.json()
-        elif method == "POST":
-            res = requests.post(url, headers=HEADERS, json=payload, timeout=10)
-            return res.json()
-        elif method == "PATCH":
-            return requests.patch(url, headers=HEADERS, json=payload, timeout=10)
-        elif method == "DELETE":
-            return requests.delete(url, headers=HEADERS, timeout=10)
-    except Exception as e:
-        logger.error(f"DB Error [{endpoint}]: {e}")
-        return [] if method == "GET" else None
+    async with aiohttp.ClientSession() as session:
+        try:
+            if method == "GET":
+                async with session.get(url, headers=HEADERS, timeout=8) as res:
+                    return await res.json()
+            elif method == "POST":
+                async with session.post(url, headers=HEADERS, json=payload, timeout=8) as res:
+                    return await res.json()
+            elif method == "PATCH":
+                async with session.patch(url, headers=HEADERS, json=payload, timeout=8) as res:
+                    return await res.json()
+            elif method == "DELETE":
+                async with session.delete(url, headers=HEADERS, timeout=8) as res:
+                    return await res.json()
+        except Exception as e:
+            logger.error(f"Async DB Error [{endpoint}]: {e}")
+            return [] if method == "GET" else None
 
-def get_or_create_user(user: types.User):
+async def get_or_create_user_async(user: types.User):
     email = f"tg_{user.id}@telegram.com"
-    res = db_query(f"users?email=eq.{email}")
+    res = await db_query_async(f"users?email=eq.{email}")
     if isinstance(res, list) and len(res) > 0:
         return res[0]
     payload = {
@@ -86,16 +91,16 @@ def get_or_create_user(user: types.User):
         "balance": 0.0,
         "is_admin": user.id in ADMIN_TELEGRAM_IDS
     }
-    new_res = db_query("users", method="POST", payload=payload)
+    new_res = await db_query_async("users", method="POST", payload=payload)
     if isinstance(new_res, list) and len(new_res) > 0:
         return new_res[0]
     return payload
 
-def get_settings():
-    res = db_query("settings?id=eq.1")
+async def update_settings_cache():
+    global SETTINGS_CACHE
+    res = await db_query_async("settings?id=eq.1")
     if isinstance(res, list) and len(res) > 0:
-        return res[0]
-    return {"card_number": "8600 0000 0000 0000", "card_holder": "Ziyodbek G.", "smm_api_url": "", "smm_api_key": ""}
+        SETTINGS_CACHE = res[0]
 
 # ==========================================
 # ⌨️ KLAVIATURALAR
@@ -111,16 +116,16 @@ def main_keyboard(is_admin=False):
         kb.append([KeyboardButton(text="👑 Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def categories_inline_keyboard():
-    services = db_query("services?select=*")
+async def categories_inline_keyboard():
+    services = await db_query_async("services?select=*")
     categories = list(set([s.get("category", "Boshqa") for s in services])) if isinstance(services, list) else []
     buttons = []
     for cat in categories:
         buttons.append([InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"cat_{cat}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def services_by_category_keyboard(category):
-    services = db_query(f"services?category=eq.{category}&select=*")
+async def services_by_category_keyboard(category):
+    services = await db_query_async(f"services?category=eq.{category}&select=*")
     buttons = []
     if isinstance(services, list):
         for s in services:
@@ -139,22 +144,21 @@ def admin_dashboard_keyboard():
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    user = get_or_create_user(message.from_user)
+    user = await get_or_create_user_async(message.from_user)
     is_admin = user.get("is_admin", False) or message.from_user.id in ADMIN_TELEGRAM_IDS
-    msg = f"🔥 **Salom, {message.from_user.full_name}!**\n\n⚡ **Ziyodbek MultiTool SMM Engine'ga xush kelibsiz!**\nTelegram, Instagram, TikTok va YouTube uchun eng tezkor xizmatlar.\n\nKerakli bo'limni pastdagi menyudan tanlang 👇"
+    msg = f"🔥 **Salom, {message.from_user.full_name}!**\n\n⚡ **Ziyodbek MultiTool SMM Engine'ga xush kelibsiz!**\n\nKerakli bo'limni pastdagi menyudan tanlang 👇"
     await message.answer(msg, reply_markup=main_keyboard(is_admin), parse_mode="Markdown")
 
 @dp.message(F.text == "👤 Profilim")
 async def cmd_profile(message: types.Message):
-    user = get_or_create_user(message.from_user)
-    msg = f"👤 **SHAXSIY PROFILINGIZ:**\n\nIsm: **{user.get('full_name')}**\n🆔 Telegram ID: `{message.from_user.id}`\n📧 Pochta ID: `{user.get('email')}`\n💰 Balans: **{user.get('balance', 0.0):,.0f} so'm**\nMaqom: **{'👑 Administrator' if user.get('is_admin') else '👤 Mijoz'}**"
+    user = await get_or_create_user_async(message.from_user)
+    msg = f"👤 **SHAXSIY PROFILINGIZ:**\n\nIsm: **{user.get('full_name')}**\n🆔 Telegram ID: `{message.from_user.id}`\n💰 Balans: **{user.get('balance', 0.0):,.0f} so'm**\nMaqom: **{'👑 Administrator' if user.get('is_admin') else '👤 Mijoz'}**"
     await message.answer(msg, parse_mode="Markdown")
 
 @dp.message(F.text == "💳 Balans")
 async def cmd_balance(message: types.Message):
-    user = get_or_create_user(message.from_user)
-    sett = get_settings()
-    msg = f"💳 **BALANS SOZLAMALARI**\n\nSizning joriy balansingiz: **{user.get('balance', 0.0):,.0f} so'm**\n\n📌 **To'lov uchun karta ma'lumotlari:**\n💳 Karta: `{sett.get('card_number')}`\n👤 Ega: **{sett.get('card_holder')}**\n\nO'tkazmani bajargach, **'➕ To'lov Arizasi Yuborish'** tugmasini bosing va chekni yuboring."
+    user = await get_or_create_user_async(message.from_user)
+    msg = f"💳 **BALANS SOZLAMALARI**\n\nSizning joriy balansingiz: **{user.get('balance', 0.0):,.0f} so'm**\n\n📌 **To'lov uchun karta ma'lumotlari:**\n💳 Karta: `{SETTINGS_CACHE.get('card_number')}`\n👤 Ega: **{SETTINGS_CACHE.get('card_holder')}**\n\nO'tkazmani bajargach, **'➕ To'lov Arizasi Yuborish'** tugmasini bosing va chekni yuboring."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ To'lov Arizasi Yuborish", callback_data="start_topup_flow")]
     ])
@@ -183,7 +187,7 @@ async def process_topup_rec(message: types.Message, state: FSMContext):
     email = f"tg_{message.from_user.id}@telegram.com"
 
     payload = {"user_email": email, "amount": float(amt), "receipt_info": receipt, "status": "pending"}
-    res = db_query("topups", method="POST", payload=payload)
+    res = await db_query_async("topups", method="POST", payload=payload)
     await state.clear()
 
     if res:
@@ -204,7 +208,7 @@ async def process_topup_rec(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🚀 Nakrutka Buyurtma Qilish")
 async def cmd_services(message: types.Message):
-    kb = categories_inline_keyboard()
+    kb = await categories_inline_keyboard()
     if not kb.inline_keyboard:
         await message.answer("🛍 Hozircha xizmatlar kategoriyalari kiritilmagan.")
         return
@@ -213,20 +217,20 @@ async def cmd_services(message: types.Message):
 @dp.callback_query(F.data.startswith("cat_"))
 async def cb_category(call: types.CallbackQuery):
     cat = call.data.split("cat_")[1]
-    kb = services_by_category_keyboard(cat)
+    kb = await services_by_category_keyboard(cat)
     await call.message.edit_text(f"📁 **{cat}** bo'limidagi xizmatlar:", reply_markup=kb, parse_mode="Markdown")
     await call.answer()
 
 @dp.callback_query(F.data == "back_to_categories")
 async def cb_back_cat(call: types.CallbackQuery):
-    kb = categories_inline_keyboard()
+    kb = await categories_inline_keyboard()
     await call.message.edit_text("📁 **KATEGORIYANI TANLANG:**", reply_markup=kb, parse_mode="Markdown")
     await call.answer()
 
 @dp.callback_query(F.data.startswith("srv_"))
 async def cb_service_select(call: types.CallbackQuery, state: FSMContext):
     srv_id = call.data.split("srv_")[1]
-    res = db_query(f"services?id=eq.{srv_id}")
+    res = await db_query_async(f"services?id=eq.{srv_id}")
     if not res:
         await call.answer("❌ Xizmat topilmadi!", show_alert=True)
         return
@@ -254,7 +258,7 @@ async def process_order_qty(message: types.Message, state: FSMContext):
     await state.clear()
 
     total_price = (float(srv["price"]) / 1000.0) * qty
-    user = get_or_create_user(message.from_user)
+    user = await get_or_create_user_async(message.from_user)
     balance = float(user.get("balance", 0.0))
 
     if balance < total_price:
@@ -263,7 +267,7 @@ async def process_order_qty(message: types.Message, state: FSMContext):
 
     new_bal = balance - total_price
     email = f"tg_{message.from_user.id}@telegram.com"
-    db_query(f"users?email=eq.{email}", method="PATCH", payload={"balance": new_bal})
+    await db_query_async(f"users?email=eq.{email}", method="PATCH", payload={"balance": new_bal})
 
     await message.answer(f"🎉 **BUYURTMA MUVAFFAQIYATLI QABUL QILINDI!**\n\n🔹 Xizmat: **{srv['title']}**\n🔗 Link: `{link}`\n🔢 Miqdor: **{qty} ta**\n💰 Yechilgan summa: **{total_price:,.0f} so'm**", parse_mode="Markdown")
 
@@ -294,7 +298,7 @@ async def cmd_admin(message: types.Message):
 async def cb_adm_topups(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS:
         return
-    topups = db_query("topups?status=eq.pending&select=*")
+    topups = await db_query_async("topups?status=eq.pending&select=*")
     if not isinstance(topups, list) or len(topups) == 0:
         await call.message.answer("📥 Kutilayotgan to'lovlar yo'q.")
         await call.answer()
@@ -314,14 +318,14 @@ async def cb_adm_topups(call: types.CallbackQuery):
 async def cb_appr_topup(call: types.CallbackQuery):
     parts = call.data.split("_")
     topup_id, user_tg_id, amount = parts[1], parts[2], float(parts[3])
-    topup_res = db_query(f"topups?id=eq.{topup_id}")
+    topup_res = await db_query_async(f"topups?id=eq.{topup_id}")
     if isinstance(topup_res, list) and len(topup_res) > 0:
         email = topup_res[0]["user_email"]
-        db_query(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "approved"})
-        u_res = db_query(f"users?email=eq.{email}")
+        await db_query_async(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "approved"})
+        u_res = await db_query_async(f"users?email=eq.{email}")
         if isinstance(u_res, list) and len(u_res) > 0:
             curr_b = float(u_res[0].get("balance", 0.0))
-            db_query(f"users?email=eq.{email}", method="PATCH", payload={"balance": curr_b + amount})
+            await db_query_async(f"users?email=eq.{email}", method="PATCH", payload={"balance": curr_b + amount})
             await call.message.edit_text(f"✅ Ariza #{topup_id} tasdiqlandi. Balansga +{amount:,.0f} so'm o'tdi.")
             if user_tg_id != "0":
                 try:
@@ -333,14 +337,14 @@ async def cb_appr_topup(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("rej_"))
 async def cb_rej_topup(call: types.CallbackQuery):
     topup_id = call.data.split("_")[1]
-    db_query(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "rejected"})
+    await db_query_async(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "rejected"})
     await call.message.edit_text(f"❌ Ariza #{topup_id} rad etildi.")
     await call.answer()
 
 @dp.callback_query(F.data == "adm_stats")
 async def cb_adm_stats(call: types.CallbackQuery):
-    users = db_query("users?select=id")
-    topups = db_query("topups?status=eq.approved&select=amount")
+    users = await db_query_async("users?select=id")
+    topups = await db_query_async("topups?status=eq.approved&select=amount")
     total_users = len(users) if isinstance(users, list) else 0
     total_revenue = sum([float(t.get("amount", 0)) for t in topups]) if isinstance(topups, list) else 0.0
     msg = f"📊 **BOT STATISTIKASI:**\n\n👥 Jami foydalanuvchilar: **{total_users} ta**\n💰 Jami tushum: **{total_revenue:,.0f} so'm**"
@@ -352,7 +356,7 @@ async def cb_adm_stats(call: types.CallbackQuery):
 # ==========================================
 
 async def handle_ping(request):
-    return web.Response(text="SMM Bot Engine Live 24/7", status=200)
+    return web.Response(text="Async Speed Boost SMM Bot Live 24/7", status=200)
 
 async def start_web_server():
     app = web.Application()
@@ -367,9 +371,9 @@ async def start_web_server():
 
 async def main():
     asyncio.create_task(start_web_server())
-    logger.info("🚀 SMM Bot Engine starting...")
+    await update_settings_cache()
+    logger.info("🚀 Async SMM Bot starting...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
