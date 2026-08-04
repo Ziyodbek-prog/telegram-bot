@@ -50,6 +50,7 @@ def admin_dashboard_keyboard(is_maintenance=False):
     m_text = "🟢 Botni Yoqish (Ishchi Rejim)" if is_maintenance else "🔴 Botni O'chirish (Texnik Rejim)"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Bot Haqida To'liq Ma'lumot (Tashxis)", callback_data="adm_diagnostics")],
+        [InlineKeyboardButton(text="📑 Loglarni Yuklash va Tozalash", callback_data="adm_get_logs")], # <-- YANGI TUGMA
         [InlineKeyboardButton(text=m_text, callback_data="adm_toggle_maintenance")],
         [InlineKeyboardButton(text="📢 Majburiy Obuna Sozlash", callback_data="adm_channels")],
         [InlineKeyboardButton(text="📥 Kutilayotgan To'lovlar", callback_data="adm_topups")],
@@ -61,6 +62,7 @@ def admin_dashboard_keyboard(is_maintenance=False):
         [InlineKeyboardButton(text="💳 Karta Sozlamalari", callback_data="adm_card")],
         [InlineKeyboardButton(text="📊 Kengaytirilgan Statistikalar", callback_data="adm_stats")]
     ])
+    
 
 def admin_channels_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
