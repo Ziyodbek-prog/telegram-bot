@@ -43,3 +43,4 @@ def admin_dashboard_keyboard(is_maintenance=False):
         [InlineKeyboardButton(text="💳 Karta Sozlamalari", callback_data="adm_card")],
         [InlineKeyboardButton(text="📊 Statistikalar", callback_data="adm_stats")]
     ])
+
