@@ -46,33 +46,45 @@ class AdminStates(StatesGroup):
     waiting_new_srv_provider_id = State()
 
 # ==========================================
-# ⚡ ASINXRON DATABASE SO'ROVLARI
+# ⚡ ANIQLASHTIRILGAN DATABASE SO'ROVLARI (LOG BILAN)
 # ==========================================
 
 async def db_query_async(endpoint, method="GET", payload=None):
-    """Supabase REST API bilan asinxron muloqot"""
+    """Supabase REST API bilan muloqot va xatoliklarni to'g'ridan-to'g'ri chiqarish"""
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
     async with aiohttp.ClientSession() as session:
         try:
             if method == "GET":
                 async with session.get(url, headers=HEADERS, timeout=10) as res:
+                    response_text = await res.text()
                     if res.status in [200, 201]:
                         return await res.json()
-                    return {"error": f"HTTP {res.status}"}
+                    logger.error(f"Supabase GET Error [{res.status}]: {response_text}")
+                    return []
             elif method == "POST":
                 async with session.post(url, headers=HEADERS, json=payload, timeout=10) as res:
+                    response_text = await res.text()
                     if res.status in [200, 201]:
                         return await res.json()
-                    return {"error": f"HTTP {res.status}"}
+                    logger.error(f"Supabase POST Error [{res.status}] on {endpoint}: {response_text}")
+                    return None
             elif method == "PATCH":
                 async with session.patch(url, headers=HEADERS, json=payload, timeout=10) as res:
-                    return res.status in [200, 204]
+                    response_text = await res.text()
+                    if res.status in [200, 204]:
+                        return True
+                    logger.error(f"Supabase PATCH Error [{res.status}] on {endpoint}: {response_text}")
+                    return False
             elif method == "DELETE":
                 async with session.delete(url, headers=HEADERS, timeout=10) as res:
-                    return res.status in [200, 204]
+                    response_text = await res.text()
+                    if res.status in [200, 204]:
+                        return True
+                    logger.error(f"Supabase DELETE Error [{res.status}] on {endpoint}: {response_text}")
+                    return False
         except Exception as e:
-            logger.error(f"Async DB Error [{endpoint}]: {e}")
-            return {"error": str(e)}
+            logger.error(f"Async DB Exception [{endpoint}]: {e}")
+            return [] if method == "GET" else None
 
 async def get_or_create_user_async(user):
     """Foydalanuvchini bazadan izlaydi yoki yangi ro'yxatdan o'tkazadi"""
@@ -93,7 +105,6 @@ async def get_or_create_user_async(user):
     return payload
 
 async def get_db_settings():
-    """Sozlamalarni Supabase'dan olish"""
     res = await db_query_async("settings?id=eq.1")
     if isinstance(res, list) and len(res) > 0:
         return res[0]
@@ -110,45 +121,40 @@ async def get_db_settings():
     return default_settings
 
 async def update_db_settings(payload):
-    """Sozlamalarni Supabase bazasiga saqlash"""
     await get_db_settings()
     return await db_query_async("settings?id=eq.1", method="PATCH", payload=payload)
 
 # ==========================================
-# 🔍 TO'LIQ TIZIM DIAGNOSTIKASI (TASHXIS)
+# 🔍 TO'LIQ TIZIM DIAGNOSTIKASI
 # ==========================================
 
 async def run_full_diagnostics(bot_instance):
-    """Botning barcha qismlarini tekshirib, xatolarni ko'rsatadi"""
     report = ["🔍 **TIZIM DIAGNOSTIKASI VA HOLAT HISOBOТI**\n"]
 
-    # 1. Telegram Bot API Tekshiruvi
     try:
         me = await bot_instance.get_me()
         report.append(f"✅ **Telegram Bot API:** A'lo (`@{me.username}` online)")
     except Exception as e:
-        report.append(f"❌ **Telegram Bot API:** Xatolar bor ({e})")
+        report.append(f"❌ **Telegram Bot API:** Xatolik ({e})")
 
-    # 2. Supabase Baza Tekshiruvi
     sett = await get_db_settings()
     if isinstance(sett, dict) and "error" not in sett:
         report.append("✅ **Supabase Settings Jadvali:** Ishlayapti")
     else:
-        report.append(f"❌ **Supabase Settings Jadvali:** Xatolik ({sett.get('error')})")
+        report.append(f"❌ **Supabase Settings Jadvali:** Xatolik")
 
     users = await db_query_async("users?select=id")
     if isinstance(users, list):
-        report.append(f"✅ **Supabase Users Jadvali:** Ishlayapti ({len(users)} ta user)")
+        report.append(f"✅ **Supabase Users Jadvali:** Ishlayapti ({len(users)} ta user bazada mavjud)")
     else:
-        report.append(f"❌ **Supabase Users Jadvali:** Xatolar bor ({users.get('error')})")
+        report.append(f"❌ **Supabase Users Jadvali:** Ulanib bo'lmadi (Loglarni tekshiring)")
 
     services = await db_query_async("services?select=id")
     if isinstance(services, list):
         report.append(f"✅ **Supabase Services Jadvali:** Ishlayapti ({len(services)} ta xizmat)")
     else:
-        report.append(f"❌ **Supabase Services Jadvali:** Xatolar bor ({services.get('error')})")
+        report.append(f"❌ **Supabase Services Jadvali:** Ulanib bo'lmadi")
 
-    # 3. SMM API Provayder Tekshiruvi
     api_url = sett.get("smm_api_url", "")
     api_key = sett.get("smm_api_key", "")
 
@@ -162,16 +168,16 @@ async def run_full_diagnostics(bot_instance):
                     if res.status == 200:
                         data = await res.json()
                         if "balance" in data:
-                            report.append(f"✅ **SMM API Ulanishi:** A'lo (Provayder Balansi: `{data['balance']}`)")
+                            report.append(f"✅ **SMM API Ulanishi:** A'lo (Balans: `{data['balance']}`)")
                         else:
-                            report.append(f"⚠️ **SMM API Ulanishi:** Kalit xato yoki provayder javobi: `{data}`")
+                            report.append(f"⚠️ **SMM API Ulanishi:** Kalit xato: `{data}`")
                     else:
-                        report.append(f"❌ **SMM API Ulanishi:** Server javob bermadi (HTTP {res.status})")
+                        report.append(f"❌ **SMM API Ulanishi:** HTTP {res.status}")
         except Exception as e:
-            report.append(f"❌ **SMM API Ulanishi:** Ulanib bo'lmadi ({e})")
+            report.append(f"❌ **SMM API Ulanishi:** {e}")
 
-    # 4. Bot Texnik Holati
     is_m = sett.get("is_maintenance", False)
-    report.append(f"\n⚙️ **Bot Rejimi:** {'🔴 Texnik Ishlar Olib Bormoqda (O\'chirilgan)' if is_m else '🟢 Ishchi Rejimda (Uyg\'oq)'}")
+    report.append(f"\n⚙️ **Bot Rejimi:** {'🔴 Texnik Ishlar' if is_m else '🟢 Ishchi Rejim'}")
 
     return "\n".join(report)
+    
