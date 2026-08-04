@@ -12,7 +12,22 @@ from handlers.user import user_router
 from handlers.referal import referal_router
 from handlers.admin import admin_router
 from handlers.diagnostics import diag_router
+from handlers.logs import logs_router, setup_logger # <-- IMPORT QILINDI
 
+logging.basicConfig(level=logging.INFO)
+setup_logger() # <-- LOGGING FILE HANDLER ISHGA TUSHIRILDI
+
+logger = logging.getLogger(__name__)
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# Routerlarni ulash
+dp.include_router(user_router)
+dp.include_router(referal_router)
+dp.include_router(admin_router)
+dp.include_router(diag_router)
+dp.include_router(logs_router)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
