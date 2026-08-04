@@ -35,25 +35,25 @@ async def start_web_server():
     logger.info(f"🌐 Keep-Alive Server running on port {port}")
 
 # ==========================================
-# 🚀 MAIN RUNNER (ROUTER ATTACH FIX)
+# 🚀 MAIN RUNNER (MUKAMMAL VA BEZ-XATO)
 # ==========================================
 
 async def main():
     # 1. Render Port Serverini Yoqish
     asyncio.create_task(start_web_server())
     
-    # 2. Neon PostgreSQL Bazasini va Migratsiyani Yoqish
+    # 2. Neon PostgreSQL Bazasini Inizializatsiya Qilish
     await init_db()
 
     # 3. Bot va Dispatcher Yaratish
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    # 4. Routerlarni Xotiradan Tozalab Xavfsiz Ulash (RuntimeError Fix)
-    all_routers = [user_router, referal_router, admin_router, diag_router]
-    for r in all_routers:
-        r.parent_router = None
-        dp.include_router(r)
+    # 4. Routerlarni Ulash
+    dp.include_router(user_router)
+    dp.include_router(referal_router)
+    dp.include_router(admin_router)
+    dp.include_router(diag_router)
 
     logger.info("🚀 Modular SMM Bot polling rejimida ishga tushmoqda...")
     await dp.start_polling(bot)
