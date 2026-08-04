@@ -15,11 +15,19 @@ from database import (
     ADMIN_TELEGRAM_IDS,
     UserStates,
     AdminStates,
-    db_query_async,
+    init_db,
     get_or_create_user_async,
     get_db_settings,
     update_db_settings,
+    get_all_services,
+    add_service,
+    delete_service,
+    create_topup,
+    get_pending_topups,
+    approve_topup_db,
+    reject_topup_db,
     run_full_diagnostics,
+    db_pool,
     logger,
 )
 from keyboards import (
@@ -33,23 +41,22 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ==========================================
-# 🛑 TEXNIK REJIM PRE-CHECK (MIDDLEWARE)
+# 🛑 TEXNIK REJIM MIDDLEWARE (PRE-CHECK)
 # ==========================================
 
 async def check_maintenance(event: types.TelegramObject) -> bool:
-    """Oddiy foydalanuvchilar uchun bot o'chirilgan bo'lsa to'xtatib qoladi"""
     user_id = event.from_user.id if event.from_user else 0
     if user_id in ADMIN_TELEGRAM_IDS:
-        return False # Adminlarga doim ruxsat
+        return False
 
     sett = await get_db_settings()
     if sett.get("is_maintenance", False):
-        msg_text = "🛠 **BOTDA TEXNIK ISHLAR OLIB BORILMOQDA!**\n\nHozirda botimizda profilaktika va yangilanish ishlari ketmoqda. Birozdan so'ng qayta urinib ko'ring."
+        msg_text = "🛠 **BOTDA TEXNIK ISHLAR OLIB BORILMOQDA!**\n\nHozirda botimizda profilaktika ketmoqda. Birozdan so'ng qayta urinib ko'ring."
         if isinstance(event, types.Message):
             await event.answer(msg_text, parse_mode="Markdown")
         elif isinstance(event, types.CallbackQuery):
             await event.answer("🛠 Botda texnik ishlar ketmoqda!", show_alert=True)
-        return True # Foydalanuvchini bloklaydi
+        return True
     return False
 
 # ==========================================
@@ -104,7 +111,7 @@ async def process_topup_amt(message: types.Message, state: FSMContext):
 async def process_topup_rec(message: types.Message, state: FSMContext):
     if await check_maintenance(message): return
     data = await state.get_data()
-    amt = data.get("amt")
+    amt = float(data.get("amt"))
     email = f"tg_{message.from_user.id}@telegram.com"
 
     photo_id = None
@@ -115,23 +122,16 @@ async def process_topup_rec(message: types.Message, state: FSMContext):
         receipt_info = message.caption or "📸 Chek rasmi yuborildi"
     elif message.text:
         receipt_info = message.text.strip()
-    else:
-        receipt_info = "Chek ma'lumoti"
 
-    payload = {"user_email": email, "amount": float(amt), "receipt_info": receipt_info, "status": "pending"}
-    res = await db_query_async("topups", method="POST", payload=payload)
+    topup_id = await create_topup(email, amt, receipt_info)
     await state.clear()
-
-    topup_id = "0"
-    if isinstance(res, list) and len(res) > 0:
-        topup_id = str(res[0].get("id", "0"))
 
     await message.answer("✅ **To'lov arizangiz muvaffaqiyatli yuborildi!**\nAdmin tekshirib balansga qo'shadi.", parse_mode="Markdown")
 
     txt = (
         f"🔔 **YANGI TO'LOV ARIZASI!**\n\n"
         f"👤 User: {message.from_user.full_name} (`{message.from_user.id}`)\n"
-        f"💰 Summa: **{amt} so'm**\n"
+        f"💰 Summa: **{amt:,.0f} so'm**\n"
         f"🧾 Chek/Izoh: `{receipt_info}`\n"
         f"🆔 Ariza ID: `{topup_id}`"
     )
@@ -154,7 +154,7 @@ async def process_topup_rec(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🚀 Nakrutka Buyurtma Qilish")
 async def cmd_services(message: types.Message):
     if await check_maintenance(message): return
-    services = await db_query_async("services?select=*")
+    services = await get_all_services()
     kb = categories_inline_keyboard(services)
     if not kb.inline_keyboard:
         await message.answer("🛍 Hozircha xizmatlar kategoriyalari kiritilmagan. Admin panel orqali qo'shing yoki SMM API'dan yuklang.")
@@ -165,7 +165,7 @@ async def cmd_services(message: types.Message):
 async def cb_category(call: types.CallbackQuery):
     if await check_maintenance(call): return
     cat = call.data.split("cat_")[1]
-    services = await db_query_async("services?select=*")
+    services = await get_all_services()
     kb = services_by_category_keyboard(services, cat)
     await call.message.edit_text(f"📁 **{cat}** bo'limidagi xizmatlar:", reply_markup=kb, parse_mode="Markdown")
     await call.answer()
@@ -173,7 +173,7 @@ async def cb_category(call: types.CallbackQuery):
 @dp.callback_query(F.data == "back_to_categories")
 async def cb_back_cat(call: types.CallbackQuery):
     if await check_maintenance(call): return
-    services = await db_query_async("services?select=*")
+    services = await get_all_services()
     kb = categories_inline_keyboard(services)
     await call.message.edit_text("📁 **KATEGORIYANI TANLANG:**", reply_markup=kb, parse_mode="Markdown")
     await call.answer()
@@ -182,11 +182,11 @@ async def cb_back_cat(call: types.CallbackQuery):
 async def cb_service_select(call: types.CallbackQuery, state: FSMContext):
     if await check_maintenance(call): return
     srv_id = call.data.split("srv_")[1]
-    res = await db_query_async(f"services?id=eq.{srv_id}")
-    if not isinstance(res, list) or len(res) == 0:
+    services = await get_all_services()
+    srv = next((s for s in services if str(s["id"]) == srv_id), None)
+    if not srv:
         await call.answer("❌ Xizmat topilmadi!", show_alert=True)
         return
-    srv = res[0]
     await state.update_data(srv=srv)
     await state.set_state(UserStates.waiting_order_link)
     await call.message.answer(f"🔗 **{srv['title']}**\n1000 ta narxi: **{float(srv['price']):,.0f} so'm**\n\nIltimos, HAVOLA (LINK)ni yuboring:", parse_mode="Markdown")
@@ -222,9 +222,8 @@ async def process_order_qty(message: types.Message, state: FSMContext):
         await message.answer(f"❌ **Balansingizda mablag' yetarli emas!**\nKerakli summa: **{total_price:,.0f} so'm**\nSizning balansingiz: **{balance:,.0f} so'm**", parse_mode="Markdown")
         return
 
-    new_bal = balance - total_price
-    email = f"tg_{message.from_user.id}@telegram.com"
-    await db_query_async(f"users?email=eq.{email}", method="PATCH", payload={"balance": new_bal})
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET balance = balance - $1 WHERE id = $2", total_price, message.from_user.id)
 
     sett = await get_db_settings()
     api_url = sett.get("smm_api_url")
@@ -279,7 +278,7 @@ async def cmd_admin(message: types.Message):
 @dp.callback_query(F.data == "adm_diagnostics")
 async def cb_adm_diagnostics(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS: return
-    await call.message.answer("⏳ Tizim diagnostikasi o'tkazilmoqda...")
+    await call.message.answer("⏳ Neon PostgreSQL va tizim diagnostikasi o'tkazilmoqda...")
     report = await run_full_diagnostics(bot)
     await call.message.answer(report, parse_mode="Markdown")
     await call.answer()
@@ -289,7 +288,7 @@ async def cb_adm_toggle_m(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS: return
     sett = await get_db_settings()
     new_status = not sett.get("is_maintenance", False)
-    await update_db_settings({"is_maintenance": new_status})
+    await update_db_settings(is_maintenance=new_status)
     
     st_text = "🔴 BOT O'CHIRILDI (TEXNIK REJIM YOQILDI)" if new_status else "🟢 BOT YOQILDI (ISHCHI REJIM)"
     await call.message.edit_reply_markup(reply_markup=admin_dashboard_keyboard(new_status))
@@ -299,8 +298,8 @@ async def cb_adm_toggle_m(call: types.CallbackQuery):
 @dp.callback_query(F.data == "adm_topups")
 async def cb_adm_topups(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS: return
-    topups = await db_query_async("topups?status=eq.pending&select=*")
-    if not isinstance(topups, list) or len(topups) == 0:
+    topups = await get_pending_topups()
+    if not topups:
         await call.message.answer("📥 Kutilayotgan to'lovlar yo'q.")
         await call.answer()
         return
@@ -319,19 +318,11 @@ async def cb_adm_topups(call: types.CallbackQuery):
 async def cb_appr_topup(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS: return
     topup_id = call.data.split("appr_")[1]
-    topup_res = await db_query_async(f"topups?id=eq.{topup_id}")
+    topup = await approve_topup_db(topup_id)
     
-    if isinstance(topup_res, list) and len(topup_res) > 0:
-        topup = topup_res[0]
+    if topup:
         email = topup["user_email"]
-        amount = float(topup["amount"])
-
-        await db_query_async(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "approved"})
-        u_res = await db_query_async(f"users?email=eq.{email}")
-        if isinstance(u_res, list) and len(u_res) > 0:
-            curr_b = float(u_res[0].get("balance", 0.0))
-            await db_query_async(f"users?email=eq.{email}", method="PATCH", payload={"balance": curr_b + amount})
-
+        amount = topup["amount"]
         try:
             tg_id_str = email.replace("tg_", "").replace("@telegram.com", "")
             if tg_id_str.isdigit():
@@ -350,7 +341,7 @@ async def cb_appr_topup(call: types.CallbackQuery):
 async def cb_rej_topup(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_TELEGRAM_IDS: return
     topup_id = call.data.split("rej_")[1]
-    await db_query_async(f"topups?id=eq.{topup_id}", method="PATCH", payload={"status": "rejected"})
+    await reject_topup_db(topup_id)
 
     reject_msg = f"❌ **Ariza #{topup_id} RAD ETILDI.**"
     if call.message.caption:
@@ -377,10 +368,10 @@ async def process_smm_key(message: types.Message, state: FSMContext):
     url = data["smm_url"]
     key = message.text.strip()
 
-    await update_db_settings({"smm_api_url": url, "smm_api_key": key})
+    await update_db_settings(smm_api_url=url, smm_api_key=key)
 
     await state.clear()
-    await message.answer(f"✅ **SMM API BAZAGA SAQLANDI!**\n\n🌐 URL: `{url}`\n🔑 KEY: `{key[:6]}...`", parse_mode="Markdown")
+    await message.answer(f"✅ **SMM API NEON POSTGRESQL'GA SAQLANDI!**\n\n🌐 URL: `{url}`\n🔑 KEY: `{key[:6]}...`", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "adm_fetch_smm")
 async def cb_adm_fetch_smm(call: types.CallbackQuery, state: FSMContext):
@@ -404,7 +395,7 @@ async def cb_adm_fetch_smm(call: types.CallbackQuery, state: FSMContext):
                     await state.set_state(AdminStates.waiting_markup_percent)
                     await call.message.answer(f"📦 API'dan **{len(services_list)} ta** xizmat topildi!\n\nXizmatlar ustiga necha foiz ustama qo'shamiz? (Masalan: `50`):", parse_mode="Markdown")
                 else:
-                    await call.message.answer("❌ SMM API javob bermadi. API key yoki URL xato bo'lishi mumkin.")
+                    await call.message.answer("❌ SMM API javob bermadi.")
     except Exception as e:
         await call.message.answer(f"❌ Xatolik yuz berdi: {e}")
     await call.answer()
@@ -425,17 +416,15 @@ async def process_markup_percent(message: types.Message, state: FSMContext):
         base_rate = float(s.get("rate", 1000)) * 12500 / 1000.0
         final_price = base_rate * (1.0 + markup)
         
-        item = {
-            "title": s.get("name", "Xizmat"),
-            "price": round(final_price, -2),
-            "category": s.get("category", "SMM"),
-            "provider_service_id": str(s.get("service")),
-            "description": "Kafolatlangan xizmat"
-        }
-        await db_query_async("services", method="POST", payload=item)
+        await add_service(
+            category=s.get("category", "SMM"),
+            title=s.get("name", "Xizmat"),
+            price=round(final_price, -2),
+            provider_service_id=str(s.get("service"))
+        )
         imported_count += 1
 
-    await message.answer(f"🎉 **{imported_count} ta** xizmat Supabase bazasiga saqlandi!", parse_mode="Markdown")
+    await message.answer(f"🎉 **{imported_count} ta** xizmat Neon PostgreSQL bazasiga saqlandi!", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "adm_add_srv")
 async def cb_adm_add_srv(call: types.CallbackQuery, state: FSMContext):
@@ -458,7 +447,7 @@ async def process_new_srv_name(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_new_srv_price)
 async def process_new_srv_price(message: types.Message, state: FSMContext):
     if not message.text or not message.text.isdigit():
-        await message.answer("❌ Narxni raqamda kiriting:")
+        await message.answer("❌Narxni raqamda kiriting:")
         return
     await state.update_data(price=message.text.strip())
     await state.set_state(AdminStates.waiting_new_srv_provider_id)
@@ -467,24 +456,19 @@ async def process_new_srv_price(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_new_srv_provider_id)
 async def process_new_srv_provider_id(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    
-    new_item = {
-        "category": data["cat"],
-        "title": data["name"],
-        "price": float(data["price"]),
-        "provider_service_id": message.text.strip(),
-        "description": "Kafolatlangan xizmat"
-    }
-    
-    await db_query_async("services", method="POST", payload=new_item)
-
+    await add_service(
+        category=data["cat"],
+        title=data["name"],
+        price=float(data["price"]),
+        provider_service_id=message.text.strip()
+    )
     await state.clear()
     await message.answer(f"✅ **YANGI XIZMAT BAZAGA SAQLANDI!**\n📁 {data['cat']} -> 🔹 {data['name']} ({data['price']} so'm)", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "adm_manage_srv")
 async def cb_adm_manage_srv(call: types.CallbackQuery):
-    services = await db_query_async("services?select=*")
-    if not isinstance(services, list) or len(services) == 0:
+    services = await get_all_services()
+    if not services:
         await call.message.answer("🛍 Hozircha bazada xizmatlar yo'q.")
         await call.answer()
         return
@@ -500,8 +484,8 @@ async def cb_adm_manage_srv(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("delsrv_"))
 async def cb_delsrv(call: types.CallbackQuery):
     srv_id = call.data.split("delsrv_")[1]
-    await db_query_async(f"services?id=eq.{srv_id}", method="DELETE")
-    await call.message.edit_text("❌ **Xizmat Supabase bazasidan o'chirildi!**", parse_mode="Markdown")
+    await delete_service(srv_id)
+    await call.message.edit_text("❌ **Xizmat Neon PostgreSQL bazasidan o'chirildi!**", parse_mode="Markdown")
     await call.answer()
 
 @dp.callback_query(F.data == "adm_card")
@@ -519,25 +503,22 @@ async def process_card_num(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_card_holder)
 async def process_card_hold(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    await update_db_settings({"card_number": data["c_num"], "card_holder": message.text.strip()})
+    await update_db_settings(card_number=data["c_num"], card_holder=message.text.strip())
     await state.clear()
-    await message.answer("✅ Karta ma'lumotlari Supabase bazasida yangilandi!")
+    await message.answer("✅ Karta ma'lumotlari Neon PostgreSQL'da yangilandi!")
 
 @dp.callback_query(F.data == "adm_stats")
 async def cb_adm_stats(call: types.CallbackQuery):
-    users = await db_query_async("users?select=id")
-    topups = await db_query_async("topups?status=eq.approved&select=amount")
-    services = await db_query_async("services?select=id")
-    
-    total_users = len(users) if isinstance(users, list) else 0
-    total_revenue = sum([float(t.get("amount", 0)) for t in topups]) if isinstance(topups, list) else 0.0
-    total_services = len(services) if isinstance(services, list) else 0
+    async with db_pool.acquire() as conn:
+        u_cnt = await conn.fetchval("SELECT COUNT(*) FROM users")
+        s_cnt = await conn.fetchval("SELECT COUNT(*) FROM services")
+        tot_rev = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM topups WHERE status = 'approved'")
 
     msg = (
         f"📊 **BOTNING UMUMIY STATISTIKASI:**\n\n"
-        f"👥 Foydalanuvchilar: **{total_users} ta**\n"
-        f"🛍 Aktiv xizmatlar: **{total_services} ta**\n"
-        f"💰 Jami tasdiqlangan kassa: **{total_revenue:,.0f} so'm**"
+        f"👥 Foydalanuvchilar: **{u_cnt} ta**\n"
+        f"🛍 Aktiv xizmatlar: **{s_cnt} ta**\n"
+        f"💰 Jami tasdiqlangan kassa: **{tot_rev:,.0f} so'm**"
     )
     await call.message.answer(msg, parse_mode="Markdown")
     await call.answer()
@@ -547,7 +528,7 @@ async def cb_adm_stats(call: types.CallbackQuery):
 # ==========================================
 
 async def handle_ping(request):
-    return web.Response(text="Pro Diagnostics SMM Bot Engine Live 24/7", status=200)
+    return web.Response(text="Neon Postgres SMM Bot Engine Live 24/7", status=200)
 
 async def start_web_server():
     app = web.Application()
@@ -562,8 +543,8 @@ async def start_web_server():
 
 async def main():
     asyncio.create_task(start_web_server())
-    await get_db_settings()
-    logger.info("🚀 Pro Diagnostics SMM Bot starting...")
+    await init_db()
+    logger.info("🚀 Neon Postgres SMM Bot starting...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
