@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 db_pool = None
 
 async def init_db():
-    """Neon PostgreSQL jadvallarini avtomatik yaratish va Texnik rejimni O'CHIRISH"""
+    """Neon PostgreSQL jadvallarini yaratish va yetishmayotgan ustunlarni majburiy qo'shish (Migration)"""
     global db_pool
     try:
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=10)
@@ -23,12 +23,13 @@ async def init_db():
                     email TEXT UNIQUE,
                     full_name TEXT,
                     balance DOUBLE PRECISION DEFAULT 0.0,
-                    referrer_id BIGINT DEFAULT NULL,
-                    total_ref_earnings DOUBLE PRECISION DEFAULT 0.0,
-                    is_admin BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    is_admin BOOLEAN DEFAULT FALSE
                 );
             """)
+            # Ustunlar mavjud bo'lmasa majburiy qo'shish (Migration Fix):
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT DEFAULT NULL;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_ref_earnings DOUBLE PRECISION DEFAULT 0.0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;")
 
             # 2. Settings Jadvali
             await conn.execute("""
@@ -43,7 +44,6 @@ async def init_db():
                 );
             """)
 
-            # Avto-Reset: Bot yoqilganda Texnik rejimni avtomatik O'CHIRISH (is_maintenance = FALSE)
             await conn.execute("""
                 INSERT INTO settings (id, card_number, card_holder, is_maintenance)
                 VALUES (1, '8600 0000 0000 0000', 'Ziyodbek G.', FALSE)
@@ -78,10 +78,10 @@ async def init_db():
                     user_email TEXT,
                     amount DOUBLE PRECISION,
                     receipt_info TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    status TEXT DEFAULT 'pending'
                 );
             """)
+            await conn.execute("ALTER TABLE topups ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;")
 
             # 6. Orders Jadvali
             await conn.execute("""
@@ -92,12 +92,12 @@ async def init_db():
                     link TEXT,
                     quantity INT,
                     price DOUBLE PRECISION,
-                    order_provider_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    order_provider_id TEXT
                 );
             """)
+            await conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;")
 
-            # 7. Channels Jadvali (Majburiy Obuna)
+            # 7. Channels Jadvali
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     id SERIAL PRIMARY KEY,
@@ -106,7 +106,7 @@ async def init_db():
                     invite_link TEXT
                 );
             """)
-            logger.info("✅ Barcha SQL jadvallar va Sozlamalar tayyor!")
+            logger.info("✅ Barcha SQL jadvallar va yangi ustunlar (Migratsiya) tayyor qilindi!")
     except Exception as e:
         logger.error(f"❌ PostgreSQL ulanishda xatolik: {e}")
 
@@ -277,23 +277,30 @@ async def add_channel_db(channel_id, title, invite_link):
 async def delete_channel_db(channel_id):
     await execute_query("DELETE FROM channels WHERE id = $1", int(channel_id))
 
-# Stats & Diagnostics
+# Stats & Diagnostics (Bez-xato xavfsiz so'rovlar)
 async def get_expanded_stats():
-    u_cnt = await fetch_val("SELECT COUNT(*) FROM users") or 0
-    u_today = await fetch_val("SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE") or 0
-    s_cnt = await fetch_val("SELECT COUNT(*) FROM services") or 0
-    c_cnt = await fetch_val("SELECT COUNT(*) FROM categories") or 0
-    tot_rev = await fetch_val("SELECT COALESCE(SUM(amount), 0) FROM topups WHERE status = 'approved'") or 0.0
-    pending_topups = await fetch_val("SELECT COUNT(*) FROM topups WHERE status = 'pending'") or 0
-    tot_orders = await fetch_val("SELECT COUNT(*) FROM orders") or 0
-    tot_ref_paid = await fetch_val("SELECT COALESCE(SUM(total_ref_earnings), 0) FROM users") or 0.0
+    try:
+        u_cnt = await fetch_val("SELECT COUNT(*) FROM users") or 0
+        u_today = await fetch_val("SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE") or 0
+        s_cnt = await fetch_val("SELECT COUNT(*) FROM services") or 0
+        c_cnt = await fetch_val("SELECT COUNT(*) FROM categories") or 0
+        tot_rev = await fetch_val("SELECT COALESCE(SUM(amount), 0) FROM topups WHERE status = 'approved'") or 0.0
+        pending_topups = await fetch_val("SELECT COUNT(*) FROM topups WHERE status = 'pending'") or 0
+        tot_orders = await fetch_val("SELECT COUNT(*) FROM orders") or 0
+        tot_ref_paid = await fetch_val("SELECT COALESCE(SUM(total_ref_earnings), 0) FROM users") or 0.0
 
-    return {
-        "users_total": u_cnt, "users_today": u_today,
-        "services_count": s_cnt, "categories_count": c_cnt,
-        "total_revenue": tot_rev, "pending_topups": pending_topups,
-        "total_orders": tot_orders, "total_ref_paid": tot_ref_paid
-    }
+        return {
+            "users_total": u_cnt, "users_today": u_today,
+            "services_count": s_cnt, "categories_count": c_cnt,
+            "total_revenue": tot_rev, "pending_topups": pending_topups,
+            "total_orders": tot_orders, "total_ref_paid": tot_ref_paid
+        }
+    except Exception as e:
+        logger.error(f"get_expanded_stats Error: {e}")
+        return {
+            "users_total": 0, "users_today": 0, "services_count": 0, "categories_count": 0,
+            "total_revenue": 0.0, "pending_topups": 0, "total_orders": 0, "total_ref_paid": 0.0
+        }
 
 async def run_full_diagnostics(bot_instance):
     report = ["🔍 **NEON POSTGRESQL DIAGNOSTIKA HISOBOТI**\n"]
