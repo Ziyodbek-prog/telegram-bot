@@ -12,40 +12,16 @@ from handlers.user import user_router
 from handlers.referal import referal_router
 from handlers.admin import admin_router
 from handlers.diagnostics import diag_router
-from handlers.logs import logs_router, setup_logger # <-- IMPORT QILINDI
 
 logging.basicConfig(level=logging.INFO)
-setup_logger() # <-- LOGGING FILE HANDLER ISHGA TUSHIRILDI
-
 logger = logging.getLogger(__name__)
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-
-# Routerlarni ulash
-dp.include_router(user_router)
-dp.include_router(referal_router)
-dp.include_router(admin_router)
-dp.include_router(diag_router)
-dp.include_router(logs_router)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-
-# Routerlarni ulash
-dp.include_router(user_router)
-dp.include_router(referal_router)
-dp.include_router(admin_router)
-dp.include_router(diag_router)
 
 # ==========================================
-# 🌐 RENDER HTTP SERVER (KEEP ALIVE)
+# 🌐 RENDER HTTP SERVER (KEEP-ALIVE PORT)
 # ==========================================
 
 async def handle_ping(request):
-    return web.Response(text="Modular Neon Postgres SMM Engine Live 24/7", status=200)
+    return web.Response(text="Neon Postgres SMM Bot Live 24/7", status=200)
 
 async def start_web_server():
     app = web.Application()
@@ -58,11 +34,30 @@ async def start_web_server():
     await site.start()
     logger.info(f"🌐 Keep-Alive Server running on port {port}")
 
+# ==========================================
+# 🚀 MAIN RUNNER (ROUTERLAR MAIN ICHIDA)
+# ==========================================
+
 async def main():
+    # 1. Render Port Serverini Yoqish
     asyncio.create_task(start_web_server())
+    
+    # 2. Neon PostgreSQL Bazasini Inizializatsiya Qilish
     await init_db()
-    logger.info("🚀 Modular Neon Postgres SMM Bot starting...")
+
+    # 3. Bot va Dispatcher Yaratish (Main Ichida)
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher(storage=MemoryStorage())
+
+    # 4. Routerlarni Xavfsiz Ulash (Crash Himoyasi)
+    dp.include_router(user_router)
+    dp.include_router(referal_router)
+    dp.include_router(admin_router)
+    dp.include_router(diag_router)
+
+    logger.info("🚀 Modular SMM Bot polling rejimida ishga tushmoqda...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
